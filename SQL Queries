@@ -1,0 +1,307 @@
+/*How many times was the app downloaded?*/
+SELECT
+COUNT(*) AS total_downloads
+FROM app_downloads
+
+
+/*How many users signed up on the app?*/
+SELECT COUNT(DISTINCT user_id) AS Total_signedup
+FROM signups
+
+
+/*How many rides were requested through the app?*/
+
+SELECT 
+COUNT(DISTINCT ride_id) as total_rides,
+COUNT(DISTINCT user_id ) as total_distinct_users
+FROM ride_requests
+
+
+*How many ride requests happened on each platform? */
+
+SELECT app.platform AS platform,
+COUNT (ride.request_ts) AS rides_requested
+FROM ride_requests AS ride
+JOIN signups ON signups.user_id= ride.user_id
+JOIN app_downloads as app ON signups.session_id=app.app_download_key
+GROUP BY app.platform
+
+
+/*How many rides were accepted by a driver?*/
+
+with RideAccepted AS(
+SELECT
+driver_id,
+COUNT(accept_ts) AS driver_accepted_rides
+FROM ride_requests
+GROUP BY driver_id
+)
+SELECT SUM(driver_accepted_rides) AS toatal_accepted_rides
+FROM  RideAccepted
+
+/*How many rides were requested and completed through the app?*/
+
+SELECT COUNT(request_ts) AS total_rides_requested,
+COUNT (CASE WHEN dropoff_ts IS NOT NULL THEN dropoff_ts END) AS total_rides_completed
+FROM ride_requests
+
+
+/*What is the average time of a ride from pick up to drop off?*/
+
+SELECT 
+AVG (CAST(pickup_ts AS time)) AS average_pickup_time,
+AVG (CAST(dropoff_ts AS time )) AS average_dropoff_time,
+Extract(Epoch FROM AVG((dropoff_ts - pickup_ts)/60) ) AS average_trip_time_minutes
+FROM ride_requests
+
+
+/*How many ride requests happened on each platform? */
+
+SELECT app.platform AS platform,
+COUNT (ride.request_ts) AS rides_requested
+FROM ride_requests AS ride
+JOIN signups ON signups.user_id= ride.user_id
+JOIN app_downloads as app ON signups.session_id=app.app_download_key
+GROUP BY app.platform
+
+
+/*How many rides did we successfully collect payments and how much was collected?*/
+
+WITH successful_rides AS (
+  SELECT ride.ride_id,
+  ride.user_id,
+  ride.request_ts,
+  ride.accept_ts,
+  ride.pickup_ts,
+  ride.dropoff_ts,
+  trnsc.purchase_amount_usd,
+  trnsc.charge_status
+  
+  FROM ride_requests AS ride
+  
+  JOIN transactions trnsc ON trnsc.ride_id = ride.ride_id
+  
+  WHERE ride.accept_ts IS NOT NULL AND 
+  ride.pickup_ts IS NOT NULL AND
+  ride.dropoff_ts IS NOT NULL AND
+  trnsc.charge_status LIKE 'Approved' AND 
+  trnsc.purchase_amount_usd !=0 
+  )
+
+SELECT COUNT(*) AS total_successful_rides,
+SUM(successful_rides.purchase_amount_usd) AS total_collected_payment
+
+FROM successful_rides
+
+
+--Date-Time information for all activity metrocar
+
+
+SELECT
+	  Date(download_ts) AS download_date
+	 ,download_ts AS download_dt_time
+	 ,signup_ts AS signup_dt_time
+	 ,request_ts AS request_dt_time
+	 ,accept_ts AS accept_date_time
+	 , pickup_ts AS  pickup_date_time
+	 , dropoff_ts AS ride_completed_dt_time
+	 , cancel_ts AS cancel_dt_time
+	 ,transaction_ts AS payment_dt_time
+	 , transaction_ts AS review_dt_time
+	 ,pickup_location as pickup
+	 ,dropoff_location AS dropoff
+
+	 FROM app_downloads
+	 LEFT JOIN signups ON app_downloads.app_download_key=signups.session_id
+	 JOIN ride_requests USING (user_id)
+	 JOIN transactions USING (ride_id)
+	 JOIN reviews USING (ride_id)
+
+
+-- Distribution of total ride requests throughout the day
+
+SELECT
+		Date(request_ts) AS date,
+    EXTRACT(HOUR FROM request_ts) AS hour_of_day
+    ,COUNT(*) AS ride_request_count
+   
+FROM ride_requests
+GROUP BY hour_of_day,date
+ORDER BY date,hour_of_day;
+
+
+--age group vs signup, ride_request , payment collected
+
+WITH AgeRangeSignups AS (
+    SELECT
+        age_range
+        ,COUNT(DISTINCT signups.user_id ) AS signup_count
+  			,COUNT (request_ts) AS request_count
+  			,COUNT(dropoff_ts) AS ride_done_count
+  			,SUM(transactions.purchase_amount_usd) AS Collected_payment
+    FROM
+        signups
+  LEFT JOIN ride_requests ON ride_requests.user_id=signups.user_id
+  LEFT JOIN transactions ON ride_requests.ride_id= transactions.ride_id
+    WHERE
+        age_range IN ('18-24', '25-34', '35-44', '45-54', 'Unknown')
+    GROUP BY
+        age_range
+)
+SELECT
+    *
+FROM
+    AgeRangeSignups;
+
+
+
+--driver rating user_count
+
+
+    SELECT
+        distinct driver_id AS driver
+        ,rating
+        ,count(user_id) AS user_count
+       
+        
+  			
+    FROM
+        reviews
+  
+    GROUP BY
+       driver_id,rating,user_id
+    ORDER BY 2 desc ,3 DESC    
+
+
+
+
+--Final Funnel query
+
+
+WITH
+user_details AS
+(
+  SELECT app_download_key
+ , user_id, platform
+ , age_range
+ , DATE(download_ts) AS download_dt
+ FROM app_downloads
+LEFT JOIN signups ON app_downloads.app_download_key=signups.session_id
+),
+downloads AS
+(
+  SELECT  0 AS step
+ , 'download' AS name
+ , platform
+ , age_range
+ , download_dt
+ , COUNT(DISTINCT app_download_key) AS users_count
+ , 0 AS count_rides
+FROM  user_details
+GROUP BY platform, age_range, download_dt
+),
+signup AS
+(
+  SELECT 1 AS step
+ , 'signup' AS name
+ , user_details.platform
+ , user_details.age_range
+ , user_details.download_dt
+ , COUNT(DISTINCT user_id) AS users_count
+ , 0 AS count_rides
+FROM signups
+JOIN user_details USING(user_id)
+WHERE signup_ts IS NOT NULL
+GROUP BY user_details.platform,  user_details.age_range, user_details.download_dt
+),
+requested AS
+(
+  SELECT 2
+  , 'ride_requested'
+  , user_details.platform
+  , user_details.age_range
+  , user_details.download_dt
+  , COUNT(DISTINCT user_id) AS users_count
+  , COUNT(DISTINCT ride_id) AS  count_rides
+FROM ride_requests
+JOIN user_details USING(user_id)
+WHERE request_ts IS NOT NULL
+GROUP BY user_details.platform,  user_details.age_range, user_details.download_dt
+),
+accepted AS
+(
+  SELECT 3
+  , 'ride_accepted'
+  , user_details.platform
+  , user_details.age_range
+  , user_details.download_dt
+  , COUNT(DISTINCT user_id) AS users_count
+  , COUNT(DISTINCT ride_id) AS  count_rides
+FROM ride_requests
+JOIN user_details USING(user_id)
+WHERE accept_ts IS NOT NULL
+GROUP BY user_details.platform,  user_details.age_range, user_details.download_dt
+),
+completed AS
+(
+  SELECT 4
+  , 'ride_completed'
+  , user_details.platform
+  , user_details.age_range
+  , user_details.download_dt
+  , COUNT(DISTINCT user_id) AS users_count
+  , COUNT(DISTINCT ride_id) AS  count_rides
+FROM ride_requests
+JOIN user_details USING(user_id)
+WHERE cancel_ts IS NULL
+GROUP BY user_details.platform,  user_details.age_range, user_details.download_dt
+),
+payment AS
+(
+  SELECT 5
+  , 'payment'
+  , user_details.platform
+  , user_details.age_range
+  , user_details.download_dt
+  , COUNT(DISTINCT user_id) AS users_count
+  , COUNT(DISTINCT ride_id) AS  count_rides
+FROM transactions
+JOIN ride_requests USING(ride_id)
+JOIN user_details USING(user_id)
+WHERE charge_status='Approved'
+GROUP BY user_details.platform,  user_details.age_range, user_details.download_dt
+),
+review AS
+(
+  SELECT 6
+  , 'review'
+  , user_details.platform
+  , user_details.age_range
+  , user_details.download_dt
+  , COUNT(DISTINCT user_id) AS users_count
+  , COUNT(DISTINCT ride_id) AS  count_rides
+FROM reviews
+JOIN user_details USING(user_id)
+GROUP BY user_details.platform,  user_details.age_range, user_details.download_dt
+)
+SELECT * FROM downloads
+UNION
+SELECT * FROM signup
+UNION
+SELECT * FROM requested
+UNION
+SELECT * FROM accepted
+UNION
+SELECT * FROM completed
+UNION
+SELECT * FROM payment
+UNION
+SELECT * FROM review
+ORDER BY 1,2,3,4,5
+
+
+
+
+
+
+
